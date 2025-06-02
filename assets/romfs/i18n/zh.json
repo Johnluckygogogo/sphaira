@@ -225,6 +225,13 @@
   "Convert to standard crypto": "转换为标准加密方式",
   "Lower master key": "降低主密钥",
   "Lower system version": "降低系统版本",
+  "Dump options": "转储选项",
+  "Dump Options": "转储选项",
+  "Created nested folder": "已创建嵌套文件夹",
+  "Append folder with .xci": "用.xci附加文件夹",
+  "Trim XCI": "裁剪 XCI",
+  "Label trimmed XCI": "标记已裁剪的XCI",
+  "Multi-threaded USB transfer": "多线程USB传输",
 
   "Homebrew": "应用列表",
   "Apps": "应用",
