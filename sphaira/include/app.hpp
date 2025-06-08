@@ -10,6 +10,9 @@
 #include "fs.hpp"
 #include "log.hpp"
 
+#ifdef USE_NVJPG
+#include <nvjpg.hpp>
+#endif
 #include <switch.h>
 #include <vector>
 #include <string>
@@ -189,6 +192,28 @@ public:
         }
     }
 
+    static auto GetAccountList() -> std::vector<AccountProfileBase> {
+        std::vector<AccountProfileBase> out;
+
+        AccountUid uids[ACC_USER_LIST_SIZE];
+        s32 account_count;
+        if (R_SUCCEEDED(accountListAllUsers(uids, std::size(uids), &account_count))) {
+            for (s32 i = 0; i < account_count; i++) {
+                AccountProfile profile;
+                if (R_SUCCEEDED(accountGetProfile(&profile, uids[i]))) {
+                    ON_SCOPE_EXIT(accountProfileClose(&profile));
+
+                    AccountProfileBase base;
+                    if (R_SUCCEEDED(accountProfileGet(&profile, nullptr, &base))) {
+                        out.emplace_back(base);
+                    }
+                }
+            }
+        }
+
+        return out;
+    }
+
 // private:
     static constexpr inline auto CONFIG_PATH = "/config/sphaira/config.ini";
     static constexpr inline auto PLAYLOG_PATH = "/config/sphaira/playlog.ini";
@@ -271,6 +296,10 @@ public:
     option::OptionLong m_text_scroll_speed{"accessibility", "text_scroll_speed", 1}; // normal
 
     PLSR_PlayerSoundId m_sound_ids[SoundEffect_MAX]{};
+
+#ifdef USE_NVJPG
+    nj::Decoder m_decoder;
+#endif
 
 private: // from nanovg decko3d example by adubbz
     static constexpr unsigned NumFramebuffers = 2;

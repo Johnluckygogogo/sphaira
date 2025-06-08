@@ -1,4 +1,5 @@
 #include "ui/menus/appstore.hpp"
+#include "ui/menus/homebrew.hpp"
 #include "ui/sidebar.hpp"
 #include "ui/popup_list.hpp"
 #include "ui/progress_box.hpp"
@@ -16,6 +17,8 @@
 #include "hasher.hpp"
 #include "threaded_file_transfer.hpp"
 #include "nro.hpp"
+#include "web.hpp"
+#include "minizip_helper.hpp"
 
 #include <minIni.h>
 #include <string>
@@ -76,62 +79,6 @@ constexpr const char* ORDER_STR[] = {
     "Asc",
 };
 
-struct MzMem {
-    const void* buf;
-    size_t size;
-    size_t offset;
-};
-
-ZPOS64_T minizip_tell_file_func(voidpf opaque, voidpf stream) {
-    auto mem = static_cast<const MzMem*>(opaque);
-    return mem->offset;
-}
-
-long minizip_seek_file_func(voidpf opaque, voidpf stream, ZPOS64_T offset, int origin) {
-    auto mem = static_cast<MzMem*>(opaque);
-    size_t new_offset = 0;
-
-    switch (origin) {
-        case ZLIB_FILEFUNC_SEEK_SET: new_offset = offset; break;
-        case ZLIB_FILEFUNC_SEEK_CUR: new_offset = mem->offset + offset; break;
-        case ZLIB_FILEFUNC_SEEK_END: new_offset = (mem->size - 1) + offset; break;
-        default: return -1;
-    }
-
-    if (new_offset > mem->size) {
-        return -1;
-    }
-
-    mem->offset = new_offset;
-    return 0;
-}
-
-voidpf minizip_open_file_func(voidpf opaque, const void* filename, int mode) {
-    return opaque;
-}
-
-uLong minizip_read_file_func(voidpf opaque, voidpf stream, void* buf, uLong size) {
-    auto mem = static_cast<MzMem*>(opaque);
-
-    size = std::min(size, mem->size - mem->offset);
-    std::memcpy(buf, (const u8*)mem->buf + mem->offset, size);
-    mem->offset += size;
-
-    return size;
-}
-
-int minizip_close_file_func(voidpf opaque, voidpf stream) {
-    return 0;
-}
-
-constexpr zlib_filefunc64_def zlib_filefunc = {
-    .zopen64_file = minizip_open_file_func,
-    .zread_file = minizip_read_file_func,
-    .ztell64_file = minizip_tell_file_func,
-    .zseek64_file = minizip_seek_file_func,
-    .zclose_file = minizip_close_file_func,
-};
-
 auto BuildIconUrl(const Entry& e) -> std::string {
     char out[0x100];
     std::snprintf(out, sizeof(out), "%s/packages/%s/icon.png", URL_BASE, e.name.c_str());
@@ -141,6 +88,12 @@ auto BuildIconUrl(const Entry& e) -> std::string {
 auto BuildBannerUrl(const Entry& e) -> std::string {
     char out[0x100];
     std::snprintf(out, sizeof(out), "%s/packages/%s/screen.png", URL_BASE, e.name.c_str());
+    return out;
+}
+
+auto BuildManifestUrl(const Entry& e) -> std::string {
+    char out[0x100];
+    std::snprintf(out, sizeof(out), "%s/packages/%s/manifest.install", URL_BASE, e.name.c_str());
     return out;
 }
 
@@ -389,6 +342,7 @@ auto UninstallApp(ProgressBox* pbox, const Entry& entry) -> Result {
                 log_write("failed to delete file: %s\n", safe_buf.s);
             } else {
                 log_write("deleted file: %s\n", safe_buf.s);
+                svcSleepThread(1e+5);
                 // todo: delete empty directories!
                 // fs::delete_directory(safe_buf);
             }
@@ -466,20 +420,17 @@ auto InstallApp(ProgressBox* pbox, const Entry& entry) -> Result {
         }
     }
 
-    struct MzMem mem{};
-    mem.buf = api_result.data.data();
-    mem.size = api_result.data.size();
-    auto file_func = zlib_filefunc;
-    file_func.opaque = &mem;
-
-    zlib_filefunc64_def* file_func_ptr{};
+    mz::MzSpan mz_span{api_result.data};
+    zlib_filefunc64_def file_func;
     if (!file_download) {
-        file_func_ptr = &file_func;
+        mz::FileFuncSpan(&mz_span, &file_func);
+    } else {
+        mz::FileFuncStdio(&file_func);
     }
 
     // 3. extract the zip
     if (!pbox->ShouldExit()) {
-        auto zfile = unzOpen2_64(zip_out, file_func_ptr);
+        auto zfile = unzOpen2_64(zip_out, &file_func);
         R_UNLESS(zfile, 0x1);
         ON_SCOPE_EXIT(unzClose(zfile));
 
@@ -596,6 +547,7 @@ auto InstallApp(ProgressBox* pbox, const Entry& entry) -> Result {
                     log_write("failed to delete: %s\n", safe_buf.s);
                 } else {
                     log_write("deleted file: %s\n", safe_buf.s);
+                    svcSleepThread(1e+5);
                 }
             }
         }
@@ -634,12 +586,15 @@ EntryMenu::EntryMenu(Entry& entry, const LazyImage& default_icon, Menu& menu)
             }
         }}),
         std::make_pair(Button::X, Action{"Options"_i18n, [this](){
-            auto sidebar = std::make_shared<Sidebar>("Options"_i18n, Sidebar::Side::RIGHT);
-            sidebar->Add(std::make_shared<SidebarEntryCallback>("More by Author"_i18n, [this](){
+            auto options = std::make_shared<Sidebar>("Options"_i18n, Sidebar::Side::RIGHT);
+            ON_SCOPE_EXIT(App::Push(options));
+
+            options->Add(std::make_shared<SidebarEntryCallback>("More by Author"_i18n, [this](){
                 m_menu.SetAuthor();
                 SetPop();
             }, true));
-            sidebar->Add(std::make_shared<SidebarEntryCallback>("Leave Feedback"_i18n, [this](){
+
+            options->Add(std::make_shared<SidebarEntryCallback>("Leave Feedback"_i18n, [this](){
                 std::string out;
                 if (R_SUCCEEDED(swkbd::ShowText(out)) && !out.empty()) {
                     const auto post = "name=" "switch_user" "&package=" + m_entry.name + "&message=" + out;
@@ -660,10 +615,44 @@ EntryMenu::EntryMenu(Entry& entry, const LazyImage& default_icon, Menu& menu)
                     });
                 }
             }, true));
-            App::Push(sidebar);
+
+            if (App::IsApplication() && !m_entry.url.empty()) {
+                options->Add(std::make_shared<SidebarEntryCallback>("Visit Website"_i18n, [this](){
+                    WebShow(m_entry.url);
+                }));
+            }
         }}),
         std::make_pair(Button::B, Action{"Back"_i18n, [this](){
             SetPop();
+        }}),
+        std::make_pair(Button::L2, Action{"Files"_i18n, [this](){
+            m_show_file_list ^= 1;
+
+            if (m_show_file_list && !m_manifest_list && m_file_list_state == ImageDownloadState::None) {
+                m_file_list_state = ImageDownloadState::Progress;
+                const auto path = BuildManifestCachePath(m_entry);
+                std::vector<u8> data;
+
+                if (R_SUCCEEDED(fs::read_entire_file(path, data))) {
+                    m_file_list_state = ImageDownloadState::Done;
+                    data.push_back('\0');
+                    m_manifest_list = std::make_unique<ScrollableText>((const char*)data.data(), 0, 374, 250, 768, 18);
+                } else {
+                    curl::Api().ToMemoryAsync(
+                        curl::Url{BuildManifestUrl(m_entry)},
+                        curl::StopToken{this->GetToken()},
+                        curl::OnComplete{[this](auto& result){
+                            if (result.success) {
+                                m_file_list_state = ImageDownloadState::Done;
+                                result.data.push_back('\0');
+                                m_manifest_list = std::make_unique<ScrollableText>((const char*)result.data.data(), 0, 374, 250, 768, 18);
+                            } else {
+                                m_file_list_state = ImageDownloadState::Failed;
+                            }
+                        }}
+                    );
+                }
+            }
         }})
     );
 
@@ -712,7 +701,13 @@ EntryMenu::~EntryMenu() {
 void EntryMenu::Update(Controller* controller, TouchInfo* touch) {
     MenuBase::Update(controller, touch);
 
-    m_detail_changelog->Update(controller, touch);
+    if (m_show_file_list) {
+        if (m_manifest_list) {
+            m_manifest_list->Update(controller, touch);
+        }
+    } else {
+        m_detail_changelog->Update(controller, touch);
+    }
 }
 
 void EntryMenu::Draw(NVGcontext* vg, Theme* theme) {
@@ -767,12 +762,24 @@ void EntryMenu::Draw(NVGcontext* vg, Theme* theme) {
         y -= block.h + 18;
     }
 
-    m_detail_changelog->Draw(vg, theme);
+    if (m_show_file_list) {
+        if (m_manifest_list) {
+            m_manifest_list->Draw(vg, theme);
+        } else if (m_file_list_state == ImageDownloadState::Progress) {
+            gfx::drawText(vg, 110, 374, 18, theme->GetColour(ThemeEntryID_TEXT), "Loading..."_i18n.c_str());
+        } else if (m_file_list_state == ImageDownloadState::Failed) {
+            gfx::drawText(vg, 110, 374, 18, theme->GetColour(ThemeEntryID_TEXT), "Failed to download manifest"_i18n.c_str());
+        }
+    } else {
+        m_detail_changelog->Draw(vg, theme);
+    }
 }
 
 void EntryMenu::ShowChangelogAction() {
     std::function<void()> func = std::bind(&EntryMenu::ShowChangelogAction, this);
     m_show_changlog ^= 1;
+    m_show_file_list = false;
+
 
     if (m_show_changlog) {
         SetAction(Button::L, Action{"Details"_i18n, func});
@@ -792,6 +799,7 @@ void EntryMenu::UpdateOptions() {
         App::Push(std::make_shared<ProgressBox>(m_entry.image.image, "Downloading "_i18n, m_entry.title, [this](auto pbox){
             return InstallApp(pbox, m_entry);
         }, [this](Result rc){
+            homebrew::SignalChange();
             App::PushErrorBox(rc, "Failed to, TODO: add message here"_i18n);
 
             if (R_SUCCEEDED(rc)) {
@@ -807,6 +815,7 @@ void EntryMenu::UpdateOptions() {
         App::Push(std::make_shared<ProgressBox>(m_entry.image.image, "Uninstalling "_i18n, m_entry.title, [this](auto pbox){
             return UninstallApp(pbox, m_entry);
         }, [this](Result rc){
+            homebrew::SignalChange();
             App::PushErrorBox(rc, "Failed to, TODO: add message here"_i18n);
 
             if (R_SUCCEEDED(rc)) {

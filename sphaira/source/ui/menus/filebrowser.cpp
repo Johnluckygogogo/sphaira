@@ -21,6 +21,7 @@
 #include "hasher.hpp"
 #include "location.hpp"
 #include "threaded_file_transfer.hpp"
+#include "minizip_helper.hpp"
 
 #include "yati/yati.hpp"
 #include "yati/source/file.hpp"
@@ -42,6 +43,8 @@
 
 namespace sphaira::ui::menu::filebrowser {
 namespace {
+
+constinit UEvent g_change_uevent;
 
 constexpr FsEntry FS_ENTRY_DEFAULT{
     "microSD card", "/", FsType::Sd, FsEntryFlag_Assoc,
@@ -288,6 +291,10 @@ auto GetRomIcon(fs::Fs* fs, ProgressBox* pbox, std::string filename, const RomDa
 
 } // namespace
 
+void SignalChange() {
+    ueventSignal(&g_change_uevent);
+}
+
 FsView::FsView(Menu* menu, const fs::FsPath& path, const FsEntry& entry, ViewSide side) : m_menu{menu}, m_side{side} {
     this->SetActions(
         std::make_pair(Button::L2, Action{[this](){
@@ -435,7 +442,6 @@ FsView::~FsView() {
 }
 
 void FsView::Update(Controller* controller, TouchInfo* touch) {
-    Widget::Update(controller, touch);
     m_list->OnUpdate(controller, touch, m_index, m_entries_current.size(), [this](bool touch, auto i) {
         if (touch && m_index == i) {
             FireAction(Button::A);
@@ -790,7 +796,10 @@ void FsView::ZipFiles(fs::FsPath zip_out) {
         zip_info.tmz_date.tm_mon = tm->tm_mon;
         zip_info.tmz_date.tm_year = tm->tm_year;
 
-        auto zfile = zipOpen(zip_out, APPEND_STATUS_CREATE);
+        zlib_filefunc64_def file_func;
+        mz::FileFuncStdio(&file_func);
+
+        auto zfile = zipOpen2_64(zip_out, APPEND_STATUS_CREATE, nullptr, &file_func);
         R_UNLESS(zfile, 0x1);
         ON_SCOPE_EXIT(zipClose(zfile, "sphaira v" APP_VERSION_HASH));
 
@@ -804,7 +813,7 @@ void FsView::ZipFiles(fs::FsPath zip_out) {
             }
 
             // root paths are banned in zips, they will warn when extracting otherwise.
-            if (file_name_in_zip[0] == '/') {
+            while (file_name_in_zip[0] == '/') {
                 file_name_in_zip++;
             }
 
@@ -1080,13 +1089,17 @@ void FsView::Sort() {
     std::sort(m_entries_current.begin(), m_entries_current.end(), sorter);
 }
 
-void FsView::SortAndFindLastFile() {
+void FsView::SortAndFindLastFile(bool scan) {
     std::optional<LastFile> last_file;
     if (!m_path.empty() && !m_entries_current.empty()) {
         last_file = LastFile(GetEntry().name, m_index, m_list->GetYoff(), m_entries_current.size());
     }
 
-    Sort();
+    if (scan) {
+        Scan(m_path);
+    } else {
+        Sort();
+    }
 
     if (last_file.has_value()) {
         SetIndexFromLastFile(*last_file);
@@ -1425,9 +1438,11 @@ static Result DeleteAllCollections(ProgressBox* pbox, fs::Fs* fs, const Selected
                 if ((mode & FsDirOpenMode_ReadDirs) && p.type == FsDirEntryType_Dir) {
                     log_write("deleting dir: %s\n", full_path.s);
                     R_TRY(fs->DeleteDirectory(full_path));
+                    svcSleepThread(1e+5);
                 } else if ((mode & FsDirOpenMode_ReadFiles) && p.type == FsDirEntryType_File) {
                     log_write("deleting file: %s\n", full_path.s);
                     R_TRY(fs->DeleteFile(full_path));
+                    svcSleepThread(1e+5);
                 }
             }
 
@@ -1846,12 +1861,29 @@ Menu::Menu(u32 flags) : MenuBase{"FileBrowser"_i18n, flags} {
     }
 
     view = view_left = std::make_shared<FsView>(this, ViewSide::Left);
+    ueventCreate(&g_change_uevent, true);
 }
 
 Menu::~Menu() {
 }
 
 void Menu::Update(Controller* controller, TouchInfo* touch) {
+    if (R_SUCCEEDED(waitSingle(waiterForUEvent(&g_change_uevent), 0))) {
+        if (IsSplitScreen()) {
+            view_left->SortAndFindLastFile(true);
+            view_right->SortAndFindLastFile(true);
+        } else {
+            view->SortAndFindLastFile(true);
+        }
+    }
+
+    // workaround the buttons not being display properly.
+    // basically, inherit all actions from the view, draw them,
+    // then restore state after.
+    const auto actions_copy = GetActions();
+    ON_SCOPE_EXIT(m_actions = actions_copy);
+    m_actions.insert_range(view->GetActions());
+
     MenuBase::Update(controller, touch);
     view->Update(controller, touch);
 }

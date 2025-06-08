@@ -154,6 +154,8 @@ struct FsDirCollection {
 
 using FsDirCollections = std::vector<FsDirCollection>;
 
+void SignalChange();
+
 struct Menu;
 
 struct FsView final : Widget {
@@ -180,6 +182,9 @@ struct FsView final : Widget {
     }
 
     void SetSide(ViewSide side);
+
+    static auto get_collection(fs::Fs* fs, const fs::FsPath& path, const fs::FsPath& parent_name, FsDirCollection& out, bool inc_file, bool inc_dir, bool inc_size) -> Result;
+    static auto get_collections(fs::Fs* fs, const fs::FsPath& path, const fs::FsPath& parent_name, FsDirCollections& out, bool inc_size = false) -> Result;
 
 private:
     void SetIndex(s64 index);
@@ -241,16 +246,13 @@ private:
     }
 
     void Sort();
-    void SortAndFindLastFile();
+    void SortAndFindLastFile(bool scan = false);
     void SetIndexFromLastFile(const LastFile& last_file);
 
     void OnDeleteCallback();
     void OnPasteCallback();
     void OnRenameCallback();
     auto CheckIfUpdateFolder() -> Result;
-
-    static auto get_collection(fs::Fs* fs, const fs::FsPath& path, const fs::FsPath& parent_name, FsDirCollection& out, bool inc_file, bool inc_dir, bool inc_size) -> Result;
-    static auto get_collections(fs::Fs* fs, const fs::FsPath& path, const fs::FsPath& parent_name, FsDirCollections& out, bool inc_size = false) -> Result;
 
     auto get_collection(const fs::FsPath& path, const fs::FsPath& parent_name, FsDirCollection& out, bool inc_file, bool inc_dir, bool inc_size) -> Result;
     auto get_collections(const fs::FsPath& path, const fs::FsPath& parent_name, FsDirCollections& out, bool inc_size = false) -> Result;

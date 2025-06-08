@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 
-set(sphaira_VERSION 0.11.3)
+set(sphaira_VERSION 0.12.0)
 
 project(sphaira
     VERSION ${sphaira_VERSION}
@@ -40,6 +40,7 @@ add_executable(sphaira
     source/ui/menus/irs_menu.cpp
     source/ui/menus/main_menu.cpp
     source/ui/menus/menu_base.cpp
+    source/ui/menus/save_menu.cpp
     source/ui/menus/themezer.cpp
     source/ui/menus/ghdl.cpp
     source/ui/menus/usb_menu.cpp
@@ -79,6 +80,7 @@ add_executable(sphaira
     source/i18n.cpp
     source/ftpsrv_helper.cpp
     source/threaded_file_transfer.cpp
+    source/minizip_helper.cpp
 
     source/usb/base.cpp
     source/usb/usbds.cpp
@@ -178,7 +180,7 @@ FetchContent_Declare(stb
 
 FetchContent_Declare(yyjson
     GIT_REPOSITORY https://github.com/ibireme/yyjson.git
-    GIT_TAG 0.10.0
+    GIT_TAG 0.11.1
 )
 
 FetchContent_Declare(minIni
@@ -197,7 +199,19 @@ FetchContent_Declare(libusbhsfs
     GIT_TAG db2bf2a
 )
 
+FetchContent_Declare(libnxtc
+    GIT_REPOSITORY https://github.com/ITotalJustice/libnxtc.git
+    GIT_TAG 0d369b8
+)
+
+FetchContent_Declare(nvjpg
+    GIT_REPOSITORY https://github.com/averne/oss-nvjpg.git
+    GIT_TAG fdcaba8
+)
+
 set(USE_NEW_ZSTD ON)
+# has issues with some homebrew and game icons (oxenfree, overwatch2).
+set(USE_NVJPG ON)
 
 set(ZSTD_BUILD_STATIC ON)
 set(ZSTD_BUILD_SHARED OFF)
@@ -249,6 +263,8 @@ FetchContent_MakeAvailable(
     yyjson
     zstd
     libusbhsfs
+    libnxtc
+    nvjpg
 )
 
 set(FTPSRV_LIB_BUILD TRUE)
@@ -259,7 +275,7 @@ set(FTPSRV_LIB_SESSIONS 16)
 set(FTPSRV_LIB_BUF_SIZE 1024*64)
 
 set(FTPSRV_LIB_CUSTOM_DEFINES
-    USE_VFS_SAVE=$<BOOL:TRUE>
+    USE_VFS_SAVE=$<BOOL:FALSE>
     USE_VFS_STORAGE=$<BOOL:TRUE>
     # disabled as it may conflict with the gamecard menu.
     USE_VFS_GC=$<BOOL:FALSE>
@@ -278,7 +294,6 @@ add_library(ftpsrv_helper
     ${ftpsrv_SOURCE_DIR}/src/platform/nx/vfs/vfs_nx_none.c
     ${ftpsrv_SOURCE_DIR}/src/platform/nx/vfs/vfs_nx_root.c
     ${ftpsrv_SOURCE_DIR}/src/platform/nx/vfs/vfs_nx_fs.c
-    ${ftpsrv_SOURCE_DIR}/src/platform/nx/vfs/vfs_nx_save.c
     ${ftpsrv_SOURCE_DIR}/src/platform/nx/vfs/vfs_nx_storage.c
     ${ftpsrv_SOURCE_DIR}/src/platform/nx/vfs/vfs_nx_stdio.c
     ${ftpsrv_SOURCE_DIR}/src/platform/nx/vfs/vfs_nx_hdd.c
@@ -290,6 +305,23 @@ target_include_directories(ftpsrv_helper PUBLIC ${ftpsrv_SOURCE_DIR}/src/platfor
 
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
+
+add_library(libnxtc
+    ${libnxtc_SOURCE_DIR}/source/nxtc.c
+    ${libnxtc_SOURCE_DIR}/source/nxtc_log.c
+    ${libnxtc_SOURCE_DIR}/source/nxtc_utils.c
+)
+target_include_directories(libnxtc PUBLIC ${libnxtc_SOURCE_DIR}/include)
+
+if (USE_NVJPG)
+    add_library(nvjpg
+        ${nvjpg_SOURCE_DIR}/lib/decoder.cpp
+        ${nvjpg_SOURCE_DIR}/lib/image.cpp
+        ${nvjpg_SOURCE_DIR}/lib/surface.cpp
+    )
+    target_include_directories(nvjpg PUBLIC ${nvjpg_SOURCE_DIR}/include)
+    set_target_properties(nvjpg PROPERTIES CXX_STANDARD 26)
+endif()
 
 find_package(ZLIB REQUIRED)
 find_library(minizip_lib minizip REQUIRED)
@@ -320,6 +352,7 @@ target_link_libraries(sphaira PRIVATE
     stb
     yyjson
     # libusbhsfs
+    libnxtc
 
     ${minizip_lib}
     ZLIB::ZLIB
@@ -334,6 +367,11 @@ else()
     message(STATUS "USING LOCAL ZSTD")
     target_link_libraries(sphaira PRIVATE ${zstd_lib})
     target_include_directories(sphaira PRIVATE ${zstd_inc})
+endif()
+
+if (USE_NVJPG)
+    target_link_libraries(sphaira PRIVATE nvjpg)
+    target_compile_definitions(sphaira PRIVATE USE_NVJPG)
 endif()
 
 target_include_directories(sphaira PRIVATE

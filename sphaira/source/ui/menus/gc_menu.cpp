@@ -13,6 +13,7 @@
 #include "i18n.hpp"
 #include "download.hpp"
 #include "dumper.hpp"
+#include "image.hpp"
 
 #include <cstring>
 #include <algorithm>
@@ -528,7 +529,7 @@ Result Menu::GcMount() {
     // the fs, same as mounting storage.
     for (u32 i = 0; i < REMOUNT_ATTEMPT_MAX; i++) {
         R_TRY(fsDeviceOperatorGetGameCardHandle(std::addressof(m_dev_op), std::addressof(m_handle)));
-        m_fs = std::make_unique<fs::FsNativeGameCard>(std::addressof(m_handle), FsGameCardPartition_Secure, false);
+        m_fs = std::make_unique<fs::FsNativeGameCard>(std::addressof(m_handle), FsGameCardPartition_Secure);
         if (R_SUCCEEDED(m_fs->GetFsOpenResult())) {
             break;
         }
@@ -965,7 +966,13 @@ void Menu::OnChangeIndex(s64 new_index) {
 
         const auto& e = m_entries[m_entry_index];
         const auto jpeg_size = e.control_size - sizeof(NacpStruct);
-        m_icon = nvgCreateImageMem(App::GetVg(), 0, e.control->icon, jpeg_size);
+
+        TimeStamp ts;
+        const auto image = ImageLoadFromMemory({e.control->icon, jpeg_size}, ImageFlag_JPEG);
+        if (!image.data.empty()) {
+            m_icon = nvgCreateImageRGBA(App::GetVg(), image.w, image.h, 0, image.data.data());
+            log_write("\t[image load] time taken: %.2fs %zums\n", ts.GetSecondsD(), ts.GetMs());
+        }
     }
 }
 
